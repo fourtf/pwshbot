@@ -1,16 +1,50 @@
-$ircregex = [Regex]::new("^(?:@([^ ]+) )?(?:[:]((?:(\w+)!)?\S+) )?(\S+)(?: (?!:)(.+?))?(?: [:](.+))?$")
-# $ircregex = [Regex]::new("^(?:@([^ ]+) )?(?:[:](\S+) )?(\S+)(?: (?!:)(.+?))?(?: [:](.+))?$")
+# set current directory
+Set-Location $PSScriptRoot
+[System.Environment]::CurrentDirectory = $PSScriptRoot
 
-#^:(?<user>[a-zA-Z0-9_]{4,25})!\1@\1\.tmi\.twitch\.tv PRIVMSG #(?<channel>[a-zA-Z0-9_]{4,25}) :(?<message>.+)$ 
+# load config
+Invoke-Expression $([System.IO.File]::ReadAllText("./config.ps1"))
 
+if ([String]::IsNullOrEmpty($botname)) {
+    Write-Host '$botname not set up, please set up config.ps1'
+    exit
+}
+
+if ([String]::IsNullOrEmpty($botchannel)) {
+    Write-Host '$botchannel not set up, please set up config.ps1'
+    exit
+}
+
+if ([String]::IsNullOrEmpty($ownername) -or $ownername -eq "myname") {
+    Write-Host '$ownername not set up, please set up config.ps1'
+    exit
+}
+
+# function to send a message
 function Send {
     Write-Host $args[0]
-    $writer.WriteLine("PRIVMSG #fourtf :$($args[0])")
+    $writer.WriteLine("PRIVMSG #$botchannel :$($args[0])")
     $writer.Flush()
 }
 
-#/([^=;]+)=([^;]*)/g
-function Irc-Parse {
+# commands are here
+$commands = @{
+    ping = 'Send("$user, pong")'
+    pwd  = 'Send("C:\Users\pwshbot")'
+}
+
+$admin_commands = @{
+    exit = 'exit'
+}
+
+# only allow a-z and digits for security(tm)
+$allowed_message_regex = [Regex]::new('^>[a-zA-Z0-9\ ]+$');
+
+# regex for tags
+# /([^=;]+)=([^;]*)/g
+$ircregex = [Regex]::new('^(?:@([^ ]+) )?(?:[:]((?:(\w+)!)?\S+) )?(\S+)(?: (?!:)(.+?))?(?: [:](.+))?$')
+
+function Invoke-Irc-Command {
     $match = $ircregex.Match($args[0])
 
     $tags = $match.Groups[1].Value
@@ -20,48 +54,45 @@ function Irc-Parse {
     $params = $match.Groups[5].Value # channel for PRIVMSG
     $message = $match.Groups[6].Value
 
-    #Write-Host "$user : [$message]"
+    Write-Host "$user : [$message]"
 
-    # elseif ($user -eq "fourtf" -and $message.StartsWith(">")) {
-
-    if ($user -eq "fourtf" -and $message -eq "`$exit") {
-        [Environment]::Exit(0)
-    }
-    elseif ($message.StartsWith(">")) {
+    if ($message.StartsWith(">") -and $allowed_message_regex.Matches($message)) {
         $words = $message.Substring(1).Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries);
 
-        if ($words[0] -eq "ping") {
-            Send("pong")
+        # select code to run
+        $code = $commands[$words[0]]
+
+        if (!$code -and $user -eq $ownername) {
+            $code = $admin_commands[$words[0]]
+        }
+
+        # try to run
+        try {
+            if ($code) {
+                Invoke-Expression $code
+            }
+            else {
+                Write-Host "nope"
+            }
+        }
+        catch {
+            Send("$($_.Exception.Message)")
+            Write-Host $_.Exception
         }
     }
 }
 
-# $script = "`$user = $user; `$message = $message; $message"
-# $ExecutionContext.InvokeCommand.ExpandString($message.Substring(1))
-# Invoke-Expression $message.Substring(1)
-
-# set current directory
-Set-Location $PSScriptRoot
-[System.Environment]::CurrentDirectory = $PSScriptRoot
-
 # bot stuff
-$botname = "pwshbot"
-$botuid = "460607714"
-$botcid = "g5zg0400k4vhrx2g6xi4hgveruamlv"
-
 $conn = New-Object System.Net.Sockets.TcpClient
 $conn.NoDelay = $true
-$conn.SendBufferSize = 8192
-$conn.ReceiveBufferSize = 8192
+$conn.SendBufferSize = 81920
+$conn.ReceiveBufferSize = 81920
 
+Write-Host "connecting..."
 $conn.Connect("irc.chat.twitch.tv", 6697)
-# $conn.Connect("irc.chat.twitch.tv", 6667)
-# $conn.Connect("localhost", 6667)
 $stream = $conn.GetStream()
 
-Write-Output $conn.Active
-Write-Host "asd"
-
+Write-Host "connected"
 $sslstream = New-Object System.Net.Security.SslStream $stream, true
 $sslstream.AuthenticateAsClient("irc.chat.twitch.tv")
 
@@ -75,15 +106,26 @@ $writer.WriteLine("CAP REQ :twitch.tv/tags");
 $writer.WriteLine("JOIN #fourtf");
 $writer.Flush();
 
-Write-Host "before read"
+Write-Host "reading..."
 $line = $reader.ReadLine()
-Write-Host "after read"
+Write-Host "read"
+
+# Gets the returns all words after index 1.
+# To be used in commands.
+function After {
+    param ($i)
+
+    $out = ""
+
+    for (; $i -lt $words.Length; $i++) {
+        $out = [String]::Concat($out, $words[$i], " ")
+    }
+
+    return $out
+}
 
 while ($line) {
-    # Write-Host $line
-
-    Irc-Parse $line
+    Invoke-Irc-Command $line
 
     $line = $reader.ReadLine()
 }
-
